@@ -132,7 +132,7 @@ $
 
 实际运行结果如下：
 
-![xv6 在 QEMU 中成功启动](picture/xv6-qemu-boot.png)
+![xv6 在 QEMU 中成功启动](../picture/xv6-qemu-boot.png)
 
 退出 QEMU 时，先按 `Ctrl+A`，松开后再按 `X`。
 
