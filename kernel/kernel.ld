@@ -9,7 +9,8 @@ PHDRS
 
 SECTIONS
 {
-    . = 0x80000000;
+    /* OpenSBI occupies the firmware area beginning at 0x80000000. */
+    . = 0x80200000;
     _kernel_start = .;
 
     .text : {
@@ -17,13 +18,14 @@ SECTIONS
         *(.text .text.*)
     } :text
 
-    . = ALIGN(16);
+    . = ALIGN(4096);
     .rodata : {
         *(.rodata .rodata.*)
     } :text
 
     . = ALIGN(4096);
     .data : {
+        PROVIDE(__global_pointer$ = . + 0x800);
         *(.data .data.*)
         *(.sdata .sdata.*)
     } :data
@@ -42,9 +44,10 @@ SECTIONS
         *(.sbss .sbss.*)
         *(COMMON)
     } :data
+    . = ALIGN(8);
     _bss_end = .;
 
-    . = ALIGN(16);
+    . = ALIGN(4096);
     _kernel_end = .;
 
     /DISCARD/ : {

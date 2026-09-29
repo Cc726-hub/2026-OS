@@ -3,53 +3,30 @@
 
 #include "types.h"
 
-#define MSTATUS_MPP_MASK (3UL << 11)
-#define MSTATUS_MPP_S    (1UL << 11)
-
 #define SSTATUS_SIE      (1UL << 1)
 
-static inline uint64
-r_mstatus(void)
+static inline void
+w_sie(uint64 value)
 {
-    uint64 value;
-    __asm__ volatile("csrr %0, mstatus" : "=r"(value));
-    return value;
+    __asm__ volatile("csrw sie, %0" : : "r"(value) : "memory");
 }
 
 static inline void
-w_mstatus(uint64 value)
+w_stvec(uint64 value)
 {
-    __asm__ volatile("csrw mstatus, %0" : : "r"(value));
-}
-
-static inline void
-w_mepc(uint64 value)
-{
-    __asm__ volatile("csrw mepc, %0" : : "r"(value));
-}
-
-static inline void
-w_mie(uint64 value)
-{
-    __asm__ volatile("csrw mie, %0" : : "r"(value));
+    __asm__ volatile("csrw stvec, %0" : : "r"(value) : "memory");
 }
 
 static inline void
 w_satp(uint64 value)
 {
-    __asm__ volatile("csrw satp, %0" : : "r"(value));
+    __asm__ volatile("csrw satp, %0" : : "r"(value) : "memory");
 }
 
 static inline void
-w_pmpaddr0(uint64 value)
+sfence_vma(void)
 {
-    __asm__ volatile("csrw pmpaddr0, %0" : : "r"(value));
-}
-
-static inline void
-w_pmpcfg0(uint64 value)
-{
-    __asm__ volatile("csrw pmpcfg0, %0" : : "r"(value));
+    __asm__ volatile("sfence.vma zero, zero" : : : "memory");
 }
 
 static inline uint64
@@ -63,7 +40,7 @@ r_sstatus(void)
 static inline void
 w_sstatus(uint64 value)
 {
-    __asm__ volatile("csrw sstatus, %0" : : "r"(value));
+    __asm__ volatile("csrw sstatus, %0" : : "r"(value) : "memory");
 }
 
 static inline uint64

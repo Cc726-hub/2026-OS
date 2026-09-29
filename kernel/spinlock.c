@@ -1,8 +1,7 @@
+#include "param.h"
 #include "riscv.h"
 #include "spinlock.h"
 #include "types.h"
-
-#define NCPU 8
 
 struct cpu_interrupt_state {
     int nesting;

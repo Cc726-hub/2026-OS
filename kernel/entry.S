@@ -1,30 +1,65 @@
-    .section .text.entry
-    .globl _entry
+    #include "param.h"
 
-    .equ NCPU, 8
-    .equ STACK_SIZE, 4096
+    .section .text.entry
+    .globl _entry, secondary_entry
 
 _entry:
-    # Every hart starts here in machine mode. Keep the hart id in tp so C code
-    # can identify the current CPU after switching to supervisor mode.
-    csrr a0, mhartid
+    # OpenSBI enters S-mode with a0 = hart id and a1 = DTB address.
+    csrci sstatus, 2
+    csrw sie, zero
     li t0, NCPU
     bgeu a0, t0, .Lpark
-    mv tp, a0
 
-    # Give each hart its own 4 KiB stack. Stacks grow toward lower addresses.
+    # Only the cold-boot hart clears BSS. HSM-started harts skip this step.
+    la t0, _bss_start
+    la t1, _bss_end
+.Lclear_bss:
+    bgeu t0, t1, .Lbss_ready
+    sd zero, 0(t0)
+    addi t0, t0, 8
+    j .Lclear_bss
+.Lbss_ready:
+    la t0, boot_hart
+    sd a0, 0(t0)
+    la t0, boot_dtb
+    sd a1, 0(t0)
+    j .Lstack
+
+secondary_entry:
+    # SBI HSM passes a0 = hart id and a1 = the supplied opaque value.
+    csrci sstatus, 2
+    csrw sie, zero
+    li t0, NCPU
+    bgeu a0, t0, .Lpark
+
+.Lstack:
+    mv tp, a0
+    # Each hart gets its own 16 KiB stack, matching the course framework.
     la sp, _stack_start
     addi t1, a0, 1
-    li t0, STACK_SIZE
-    mul t0, t0, t1
+    slli t0, t1, STACK_SHIFT
     add sp, sp, t0
     andi sp, sp, -16
+
+    .option push
+    .option norelax
+    la gp, __global_pointer$
+    .option pop
 
     call start
 
 .Lpark:
     wfi
     j .Lpark
+
+    .section .text
+    .balign 4
+    .globl early_trap
+early_trap:
+    csrci sstatus, 2
+.Ltrap_park:
+    wfi
+    j .Ltrap_park
 
     .section .bss.stack,"aw",@nobits
     .balign 16
