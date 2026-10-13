@@ -1,7 +1,8 @@
 #include "types.h"
 #include "uart.h"
+#include "memlayout.h"
 
-#define UART0 0x10000000UL
+#define UART0 UART_BASE
 
 #define UART_RHR 0
 #define UART_THR 0

@@ -19,11 +19,13 @@ SECTIONS
     } :text
 
     . = ALIGN(4096);
+    text_end = .;
     .rodata : {
         *(.rodata .rodata.*)
     } :text
 
     . = ALIGN(4096);
+    rodata_end = .;
     .data : {
         PROVIDE(__global_pointer$ = . + 0x800);
         *(.data .data.*)
@@ -49,6 +51,7 @@ SECTIONS
 
     . = ALIGN(4096);
     _kernel_end = .;
+    kernel_end = .;
 
     /DISCARD/ : {
         *(.eh_frame)

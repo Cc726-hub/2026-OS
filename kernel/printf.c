@@ -4,6 +4,7 @@
 #include "spinlock.h"
 #include "types.h"
 #include "uart.h"
+#include "riscv.h"
 
 static struct {
     struct spinlock lock;
@@ -128,4 +129,26 @@ printf(const char *format, ...)
     if (printer.locking) {
         release(&printer.lock);
     }
+}
+
+void
+panic(const char *message)
+{
+    intr_off();
+    /* A fatal exception may have interrupted this hart while holding print's
+       lock. Bypass it so the diagnostic can still reach the console. */
+    printer.locking = 0;
+    printf("PANIC hart=%d: %s\n", (int)r_tp(), message);
+    for (;;)
+        __asm__ volatile("wfi");
+}
+
+void
+early_trap_report(uint64 cause, uint64 epc, uint64 tval)
+{
+    intr_off();
+    printer.locking = 0;
+    printf("TRAP hart=%d scause=%d sepc=%p stval=%p\n",
+           (int)r_tp(), (int)cause, (void *)epc, (void *)tval);
+    panic("unexpected supervisor trap");
 }

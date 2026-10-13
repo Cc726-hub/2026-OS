@@ -9,6 +9,8 @@ QEMU    ?= qemu-system-riscv64
 BUILD  := build
 KERNEL := $(BUILD)/kernel.elf
 CPUS   ?= 2
+LAB2_TEST ?= 0
+TEST_CASE ?= 0
 CPPFLAGS := -include $(BUILD)/config.h
 
 ARCHFLAGS := -march=rv64gc -mabi=lp64d -mcmodel=medany \
@@ -31,7 +33,11 @@ C_SOURCES := kernel/start.c \
              kernel/main.c \
              kernel/uart.c \
              kernel/printf.c \
-             kernel/spinlock.c
+             kernel/spinlock.c \
+             kernel/string.c \
+             kernel/pmem.c \
+             kernel/kvm.c \
+             kernel/lab2_test.c
 
 ASM_SOURCES := kernel/entry.S
 
@@ -42,7 +48,7 @@ DEPS := $(OBJECTS:.o=.d)
 
 .DEFAULT_GOAL := build
 
-.PHONY: build inspect run clean FORCE
+.PHONY: build inspect run test clean FORCE
 
 build: $(KERNEL)
 
@@ -53,7 +59,7 @@ $(BUILD)/.dir:
 FORCE:
 
 $(BUILD)/config.h: FORCE | $(BUILD)/.dir
-	@printf '#define NCPU %s\n' '$(CPUS)' > $@.tmp
+	@printf '#define NCPU %s\n#define LAB2_TEST %s\n#define TEST_CASE %s\n' '$(CPUS)' '$(LAB2_TEST)' '$(TEST_CASE)' > $@.tmp
 	@if cmp -s $@.tmp $@; then rm -f $@.tmp; else mv $@.tmp $@; fi
 
 $(BUILD)/%.o: kernel/%.c $(BUILD)/config.h | $(BUILD)/.dir
@@ -81,5 +87,8 @@ run: build
 
 clean:
 	rm -rf -- $(BUILD)
+
+test:
+	python3 tests/qemu_lab2.py --cpus $(CPUS)
 
 -include $(DEPS)

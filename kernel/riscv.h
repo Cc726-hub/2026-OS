@@ -5,6 +5,14 @@
 
 #define SSTATUS_SIE      (1UL << 1)
 
+static inline uint64
+r_satp(void)
+{
+    uint64 value;
+    __asm__ volatile("csrr %0, satp" : "=r"(value));
+    return value;
+}
+
 static inline void
 w_sie(uint64 value)
 {

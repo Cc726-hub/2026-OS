@@ -57,9 +57,10 @@ secondary_entry:
     .globl early_trap
 early_trap:
     csrci sstatus, 2
-.Ltrap_park:
-    wfi
-    j .Ltrap_park
+    csrr a0, scause
+    csrr a1, sepc
+    csrr a2, stval
+    tail early_trap_report
 
     .section .bss.stack,"aw",@nobits
     .balign 16

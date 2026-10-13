@@ -1,4 +1,6 @@
 #include "boot.h"
+#include "mem.h"
+#include "lab2_test.h"
 #include "param.h"
 #include "printf.h"
 #include "riscv.h"
@@ -18,11 +20,21 @@ main(void)
         printfinit();
 
         printf("\nHello, OS!\n");
-        printf("Lab 1 kernel entered main in supervisor mode.\n");
+        printf("Lab 2: physical memory and Sv39 kernel paging.\n");
         printf("OpenSBI boot hart %d, kernel=%p, dtb=%p.\n",
                (int)hartid, (void *)_entry, (void *)boot_dtb);
         printf("printf test: d=%d x=%x p=%p c=%c s=%s %%\n",
                -123, 0x2026U, (void *)&started, 'A', "ok");
+
+        pmem_init();
+#if LAB2_TEST
+        lab2_test_physical();
+#endif
+        kvm_init();
+        kvm_inithart();
+#if LAB2_TEST
+        lab2_test_virtual();
+#endif
 
         for (uint32 cpu = 0; cpu < NCPU; cpu++) {
             if (cpu == hartid) {
@@ -32,9 +44,7 @@ main(void)
             if (error != 0) {
                 printf("SBI hart_start failed: hart=%d error=%d\n",
                        (int)cpu, (int)error);
-                for (;;) {
-                    __asm__ volatile("wfi");
-                }
+                panic("SBI hart_start failed");
             }
         }
 
@@ -43,11 +53,14 @@ main(void)
         while (__atomic_load_n(&started, __ATOMIC_ACQUIRE) == 0) {
             __asm__ volatile("nop");
         }
+        kvm_inithart();
     }
 
-    /* The printf lock keeps each complete line together across all harts. */
-    printf("hart %d: shared UART output is protected by a spinlock.\n",
-           (int)hartid);
+    printf("hart %d: Sv39 enabled, satp=%p; shared UART is locked.\n",
+           (int)hartid, (void *)r_satp());
+#if LAB2_TEST
+    lab2_test_hart();
+#endif
 
     for (;;) {
         __asm__ volatile("wfi");
