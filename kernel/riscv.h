@@ -4,6 +4,36 @@
 #include "types.h"
 
 #define SSTATUS_SIE      (1UL << 1)
+#define SSTATUS_SPP      (1UL << 8)
+#define SIE_STIE         (1UL << 5)
+#define SIE_SEIE         (1UL << 9)
+#define SCAUSE_INTERRUPT (1UL << 63)
+#define IRQ_S_TIMER      5
+#define IRQ_S_EXTERNAL   9
+
+static inline uint64
+r_time(void)
+{
+    uint64 value;
+    __asm__ volatile("rdtime %0" : "=r"(value));
+    return value;
+}
+
+static inline uint64
+r_sie(void)
+{
+    uint64 value;
+    __asm__ volatile("csrr %0, sie" : "=r"(value));
+    return value;
+}
+
+static inline uint64
+r_stvec(void)
+{
+    uint64 value;
+    __asm__ volatile("csrr %0, stvec" : "=r"(value));
+    return value;
+}
 
 static inline uint64
 r_satp(void)

@@ -1,169 +1,193 @@
-# Lab 2：内存管理初步
+# Lab 3：中断异常初步
 
-在 Lab 1 的 OpenSBI 多核启动、UART、格式化输出和自旋锁基础上，本实验增加物理页管理与 Sv39 内核虚拟内存。实现位于个人仓库的 `lab2` 分支，使用 QEMU virt、128 MiB RAM，内核从 `0x80200000` 开始运行。
+本实验根据课程 `lab-3.pptx`，在 Lab 2 的 OpenSBI 多核启动和 Sv39 内核页表基础上建立 S-mode 陷阱系统，实现串口中断回显与时钟中断。实现位于个人仓库的 `lab3` 分支。
 
-实验要求参考[教师 Lab 2 指导书](https://github.com/2018wzh/ecnu-oslab-2026/blob/lab-2/README.md)和本地 Lab 2 课件。仓库延续自己的 `kernel/` 结构，内存接口与教师框架一致。Lab 1 文档归档到 [lab1/README.md](lab1/README.md)，Lab 0 文档见 [lab0/README.md](lab0/README.md)。
+前序实验文档：[Lab 0](lab0/README.md)、[Lab 1](lab1/README.md)、[Lab 2](lab2/README.md)。本实验继续使用自己的 `kernel/` 目录，沿用课件中的 `trap_kernel_init`、`trap_kernel_inithart`、`kernel_vector`、`trap_kernel_handler`、`external_interrupt_handler`、`uart_intr` 等接口名称。
 
 ## 完成内容
 
-- 两个带哨兵的单链表分别管理内核页和普通数据页，每页 4 KiB，两池分别加锁。
-- 前 1024 个可分配页属于内核池，其余属于普通数据池；分配时清零整页。
-- 检查释放地址的对齐、边界、所属池和重复释放；耗尽及非法操作触发 `panic`。
-- 实现 Sv39 三级页表查找、映射、权限更新、解除映射、页表打印。
-- 实现内核直接映射和每个 hart 的分页启用。
-- 独立测试入口验证多核并发、计数恢复、实际 MMU 翻译和页权限异常。
+- 建立直接模式的内核陷阱入口，保存并恢复全部整数寄存器，以及 `sepc`、`sstatus`。
+- 配置 QEMU virt 的 PLIC，处理 UART IRQ 10 的 claim / complete。
+- 开启 UART 接收中断，读取 FIFO 中的全部字符并回显，回车转换为换行。
+- 使用 SBI TIME 为每个 hart 设置约 100 ms 的定时事件，处理中断后安排下一次事件。
+- 使用主启动 hart 维护系统 `ticks`，每累计 10 次打印一次计时信息。
+- 保留非法指令、缺页等异常的诊断信息，输出 hart、`scause`、`sepc`、`stval` 后停止该 hart。
+- 验证多核启动、串口重复中断、每核定时器、寄存器恢复和自旋锁的中断状态恢复。
 
-## 编译、运行和测试
+## 编译与运行
 
-在已安装 RISC-V GCC、QEMU 和 Python 3 的 Linux / WSL 中，进入本仓库执行：
+在装有 RISC-V GCC、QEMU 和 Python 3 的 Linux / WSL 中进入仓库：
 
 ```bash
 make
 make run
 ```
 
-Windows PowerShell 可直接使用现有 WSL：
+Windows PowerShell 可以直接调用现有 Ubuntu：
 
 ```powershell
 wsl -d Ubuntu -- bash -lc 'cd /mnt/e/操作系统lab/2026-OS && make run'
 ```
 
-退出 QEMU：按 Ctrl+A，松开后按 X。默认双核，可用 `make run CPUS=4` 改为四核，支持 1～8 核。内存保持 `128M`，与 `memlayout.h` 的静态配置一致。
+默认双核，支持 `make run CPUS=1`、`CPUS=4`、`CPUS=8`。内存固定为 `128M`，与 Lab 2 的内存映射一致。退出 QEMU：按 Ctrl+A，松开后按 X。
 
-自动验证默认双核及全部异常用例：
+启动后每个 hart 输出分页和中断初始化信息。键盘输入会立即回显，主程序使用 `wfi` 等待，无需循环轮询 UART。大约每秒出现：
+
+```text
+timer: ticks=10 (~1 s)
+timer: ticks=20 (~2 s)
+```
+
+串口回显和计时信息共享控制台，按键过程中可能插入完整的计时输出。这里仅实现字符回显，尚无输入行编辑、命令解析或用户进程。
+
+## 初始化顺序
+
+主核只执行一次全局初始化：
+
+```text
+OpenSBI -> _entry -> start -> main
+UART / printf -> pmem_init -> kvm_init -> kvm_inithart
+trap_kernel_init -> trap_kernel_inithart -> uart_intr_enable
+SBI HSM 启动从核 -> release 发布 started -> intr_on -> wfi
+```
+
+从核等待 `started` 后启用自己的分页和中断：
+
+```text
+OpenSBI HSM -> secondary_entry -> start -> main
+acquire 等待 started -> kvm_inithart -> trap_kernel_inithart
+intr_on -> wfi
+```
+
+全局初始化设置 UART 中断源的 PLIC 优先级，初始化系统计时锁。每核初始化设置自己的 `stvec`、PLIC S-mode 中断使能位与阈值、首次定时事件，以及 `sie.SEIE` 和 `sie.STIE`。最后打开 `sstatus.SIE`，保证不会在入口或共享状态尚未就绪时处理中断。
+
+主启动 hart 使用 OpenSBI 提供的编号，不假定其为 0。共享状态通过 release / acquire 发布，每个 hart 使用独立的 16 KiB 启动栈和自己的中断寄存器。
+
+## 陷阱进入与返回
+
+中断是异步事件，异常由当前指令同步引起。硬件进入 S-mode 陷阱时会设置 `sepc`、`scause`、`stval`，更新 `sstatus.SPP`、`SPIE`、`SIE`，跳转到 `stvec`。硬件不会自动保存全部通用寄存器，需要入口汇编处理。
+
+`kernel_vector.S` 在当前内核栈上申请 288 字节的陷阱帧，维持 C ABI 要求的 16 字节对齐：
+
+| 字节偏移 | 内容 |
+| --- | --- |
+| 0～255 | `x[0]`～`x[31]`，`x[2]` 保存陷入前的 `sp` |
+| 256 | `sepc` |
+| 264 | `sstatus` |
+| 272 | `stval` |
+| 280 | `scause` |
+
+保存现场后把帧地址传给 `trap_kernel_handler`。处理函数要求陷阱来自 S-mode，且处理期间全局中断关闭。`scause` 最高位表示中断，其余位表示原因：5 是 S-mode 时钟中断，9 是 S-mode 外部中断。
+
+返回时恢复原来的 `sepc`、`sstatus` 和整数寄存器，最后执行 `sret`。**中断返回不对 `sepc` 加 4**。硬件已记录正确的恢复地址，压缩指令也可能只有 2 字节；统一加 4 会跳过正常指令。异常是否需要重试、跳过或终止要根据原因决定，本实验的异常统一打印诊断后停止。
+
+当前执行流均位于内核，本章不实现 U-mode 栈切换、进程陷阱帧或嵌套中断。内核和处理函数只使用整数运算；浮点及向量上下文管理留到需要它们的执行环境中实现。
+
+## 串口中断
+
+Lab 2 已把 UART 和 PLIC 映射为内核可读写 MMIO。本章直接使用这些映射，不新增 CLINT 映射。
+
+QEMU virt 的 UART IRQ 为 10，PLIC 优先级设为 1，每核 S-mode 阈值设为 0，使该中断源可以到达全部 hart。地址计算与 [xv6 的 PLIC 实现](https://github.com/mit-pdos/xv6-riscv/blob/riscv/kernel/plic.c)一致：
+
+| 寄存器 | 地址 |
+| --- | --- |
+| UART 中断优先级 | `0x0c000000 + 10 * 4` |
+| hart 的 S-mode enable | `0x0c002080 + hart * 0x100` |
+| hart 的 S-mode threshold | `0x0c201000 + hart * 0x2000` |
+| hart 的 S-mode claim / complete | `threshold + 4` |
+
+处理路径：
+
+```text
+键盘输入 -> UART 接收 FIFO -> PLIC -> S-mode 外部中断
+kernel_vector -> trap_kernel_handler -> external_interrupt_handler
+plic_claim -> uart_intr -> plic_complete -> 恢复现场 -> sret
+```
+
+`plic_claim()` 返回 0 时表示没有可领取的请求，直接返回，不写 complete。多个 hart 收到通知时，也可能已有另一个 hart 先领取请求。对于非零 IRQ，必须在处理结束后 complete，否则后续同一中断源无法正常再次通知。
+
+`uart_intr()` 循环读取接收 FIFO，直到 `uartgetc()` 返回 -1，确保本次已到达的字符全部处理。每个字符通过带锁的 `printf` 输出，避免和其他 hart 的输出竞争。只开启接收中断，发送仍然调用同步 UART 输出，不启用发送空闲中断。
+
+## 时钟中断
+
+QEMU virt 的时间基准为 10 MHz，本次运行的 OpenSBI 输出也确认了 `aclint-mtimer @ 10000000Hz`。这表示 `time` 每秒增加约一千万，与 CPU 指令执行频率不同。本章设定 `TIMER_INTERVAL = 1000000`，即约 100 ms。
+
+`sbi_set_timer(r_time() + TIMER_INTERVAL)` 使用 TIME 扩展的 EID `0x54494d45`、FID 0。参数是绝对时间，设为未来时间会清除挂起的定时中断并安排新事件，见 [RISC-V SBI TIME 规范](https://github.com/riscv-non-isa/riscv-sbi-doc/blob/master/src/ext-time.adoc)。底层定时器由 OpenSBI 管理，内核不直接访问 `mtime` / `mtimecmp`，也不自行编写 M-mode 定时器入口。
+
+S-mode 处理 `scause = interrupt | 5`，无需把它当成软件中断。每次处理先设定下一次绝对时间，再递增该 hart 的中断计数。只有 `boot_hart` 在 `ticks_lock` 内增加系统 `ticks`，因此四核运行不会把系统计时放大为四倍。
+
+本实现按“当前时间 + 间隔”重置定时事件。长时间关闭中断会推迟处理，并且不补记已经错过的周期，所以 `ticks / 10` 是实验用近似计时，精确经过时间应读取 `time`。计时打印在释放 `ticks_lock` 后进行，缩短共享锁的持有时间。
+
+## 中断与自旋锁
+
+串口回显和时钟输出都可能在中断上下文调用 `printf`。Lab 1 的 `acquire` 会先关闭本核中断，避免同一 hart 正在持有打印锁时被中断再次申请该锁而自锁。其他 hart 仍可处理中断，通过原子操作竞争共享锁。
+
+`push_off` / `pop_off` 按 hart 记录嵌套深度。仅最后一层锁释放时恢复最外层记录的中断状态。进入处理函数时 SIE 已关闭，处理中使用锁也不会意外开启嵌套中断；原执行流的中断状态由 `sret` 恢复。
+
+## 自动测试与实测结果
+
+默认双核测试：
 
 ```bash
 make test
 ```
 
-完整验证 1、2、4、8 核及全部异常用例：
+完整验证 1、2、4、8 核：
 
 ```bash
-python3 tests/qemu_lab2.py --cpus 1 2 4 8
+python3 tests/qemu_lab3.py --cpus 1 2 4 8
 ```
 
-只执行双核正常功能测试：
+Lab 2 回归测试：
 
 ```bash
-python3 tests/qemu_lab2.py --cpus 2 --skip-negative
+make test-lab2
 ```
 
-测试使用 `build/tests/` 下的独立构建，日志及汇总保存在该目录，不覆盖正常的 `build/kernel.elf`。手动查看重复释放诊断可执行 `make run LAB2_TEST=1 TEST_CASE=4 CPUS=1`；恢复正常启动使用 `make run LAB2_TEST=0 TEST_CASE=0`。构建配置变化会自动重编译，无需先清理。
+测试分别使用 `build/lab3-tests/` 和 `build/tests/` 下的独立构建，不覆盖正常的 `build/kernel.elf`。每个目录保存构建日志、启动日志和 `results.json`。正常编译不包含测试执行逻辑，`LAB3_TEST=1` 时才启用寄存器和锁检查。`LAB2_TEST=1` 时沿用早期异常入口，不打开新中断，以保持前序内存测试的条件。
 
-## 物理页管理
+2026-10-13，使用现有 WSL Ubuntu、RISC-V GCC 和 QEMU 8.2.2 实测，**Lab 3 的 10 项检查全部通过**：
 
-以下区间均为左闭右开，链接边界按 4096 字节对齐：
+| 核数 | 启动、重复回显、系统计时 | 整数寄存器、嵌套锁、每核定时器、PLIC | 上下文测试主核 |
+| --- | --- | --- | --- |
+| 1 | 通过 | 通过 | hart 0 |
+| 2 | 通过 | 通过 | hart 1 |
+| 4 | 通过 | 通过 | hart 3 |
+| 8 | 通过 | 通过 | hart 0 |
 
-| 区间 | 用途 |
-| --- | --- |
-| `0x80000000` ～ `0x80200000` | OpenSBI 固件保留区，不参与分配 |
-| `_kernel_start` ～ `text_end` | 内核代码 |
-| `text_end` ～ `rodata_end` | 内核只读数据 |
-| `rodata_end` ～ `kernel_end` | 可写数据、每核启动栈、BSS |
-| `kernel_end` ～ `kernel_end + 1024 × 4096` | 内核页池，包括页表页 |
-| 内核池末尾 ～ `0x88000000` | 普通数据页池，排除设备树占用页 |
+每种核数执行 2 项测试，另有非法指令和未映射写入两项独立异常测试。双核和四核实测主核不是 0，仍然正常启动和计时。
 
-QEMU 把启动设备树放在 RAM 中，本次测试的地址为 `0x87e00000`。分配器读取 DTB 头中的长度，保留覆盖它的页面，避免破坏后续实验需要的启动信息。因此普通池页数略少于整个区间的页数。这里仅保留启动 DTB，完整设备树保留表和动态硬件发现尚未实现。
+此外，双核 Lab 2 回归测试的 24 项检查全部通过，包括正常启动、内存与分页，以及 22 项预期失败用例。本次合计 34 项 QEMU 检查通过。
 
-每个空闲页的开头保存 `next` 指针，哨兵 `list_head` 位于常驻管理结构。申请时在池锁内摘除首节点、减少 `allocable`，解锁后清零已独占的页面。释放时在池锁内检查状态、填充调试数据、插入首节点并增加计数。链表申请/释放为 O(1)，整页清零另需处理 4096 字节。
+寄存器检查使用汇编给整数寄存器设置不同值，保留有效的 `sp`、hart 编号 `tp` 和结果指针，经过真实定时中断后核对全部 `x[0]`～`x[31]`。锁检查在持有两层锁期间等待三个定时周期，确认本核没有执行定时处理，再验证内层释放、最外层释放和原本关闭中断的状态。每个 hart 至少处理五次定时中断。串口测试分批输入三组文本，核对回显，检查同一 IRQ 完成后还能再次触发；上下文测试另检查收到一个字符且 PLIC 完整处理过该请求。
 
-额外的 4 KiB 位图记录空闲状态，用来发现重复释放。两池可能共用某个位图字，因此采用 RISC-V 支持的 32 位原子位操作，避免不同池锁下的并发更新丢失。
-
-```c
-void pmem_init(void);                 // 只在主核执行一次
-void *pmem_alloc(bool kernel);        // true 内核池；false 普通池；返回清零页
-void pmem_free(uint64 pa, bool kernel);
-uint32 pmem_available(bool kernel);   // 加锁读取当前空闲数量
-```
-
-内存耗尽按教师要求触发 `panic`。释放者必须已停止使用该页，不能释放仍被其他 CPU、页表或别名引用的页面。
-
-## Sv39 页表
-
-本实验使用 Sv39 低半区：`0 <= va < VA_MAX`，`VA_MAX = 1UL << 38`。三级索引来自 VA 的 `[38:30]`、`[29:21]`、`[20:12]`，页内偏移为低 12 位。一张页表占 4096 字节，包含 512 个 8 字节 PTE。
-
-`vm_getpte` 从 level 2 向下查找。有效且 R/W/X 全为 0 的非叶 PTE 指向下一级页表；路径缺失且 `alloc=true` 时，从内核池申请清零页。level 0 的叶项记录最终数据页。本章只支持 4 KiB 叶项，遇到上层大页会诊断并停止。
-
-`vm_mappages` 要求 VA/PA 页对齐、长度非零，最后不足一页时覆盖整页。检查 VA 上界、56 位物理地址范围和算术溢出；W 要求同时设置 R，R/X 至少有一个。叶项设置 V/A/D。对同一 VA/PA 可更新权限，改指向另一 PA 时必须先解除旧映射。
-
-`vm_unmappages` 清除叶项；`free_pages=true` 时把普通数据页交回普通池。它按课程约定保留中间页表。额外的 `vm_freewalk` 可以在所有叶项移除后回收非活动页表，便于验证测试不泄漏页表页。
-
-内核叶项不设置 U，映射关系如下：
-
-| 区域 | 映射 | 权限 |
-| --- | --- | --- |
-| UART `0x10000000`，1 页 | VA = PA | R/W |
-| PLIC `0x0c000000`，64 MiB | VA = PA | R/W |
-| 内核代码 | VA = PA | R/X |
-| `.rodata` 及页尾填充 | VA = PA | R |
-| 可写数据、栈、BSS、动态 RAM | VA = PA | R/W |
-| OpenSBI 固件区 | 不映射 | — |
-| CLINT | 不映射，由 OpenSBI 管理 | — |
-
-代码可以执行但不能写，只读数据不能写，普通数据不能执行。页表页在 RAM 直接映射中可读写；指向下级页表的非叶 PTE 不设置 R/W/X，表示 MMU 继续查找。
-
-## 多核启用与同步
-
-主核：`OpenSBI -> _entry -> start -> main -> UART/printf -> pmem_init -> kvm_init -> kvm_inithart -> SBI HSM 启动从核 -> release 发布 started`。
-
-从核：`OpenSBI HSM -> secondary_entry -> start -> main -> acquire 等待 started -> kvm_inithart`。
-
-主核编号不固定为 0。只有主核初始化分配器和共享页表，每个 hart 都要设置自己的 `satp = (8UL << 60) | (root_pa >> 12)` 并执行 `sfence.vma`。直接映射保证分页前后的 PC、栈、全局变量和 UART 地址可继续使用。
-
-页表修改要求调用者独占操作。当前只刷新本核 TLB，尚未实现跨 CPU 的 TLB shootdown；不能在其他核正使用共享映射时直接改变它。正常启动在发布页表后不再修改，活动映射测试在启动从核之前完成。
-
-## 测试设计与结果
-
-测试代码仅在 `LAB2_TEST=1` 时编译。实际使用现有 WSL Ubuntu、RISC-V GCC 10.5.0、QEMU 8.2.2 执行。2026-10-13 完整运行结果：**30 项全部通过**。
-
-| 核数 | 正常启动 | 物理页、页表与多核测试 | 测试结束内核空闲页 | 测试结束普通空闲页 |
-| --- | --- | --- | --- | --- |
-| 1 | 通过 | 通过 | 925 | 31125 |
-| 2 | 通过 | 通过 | 925 | 31121 |
-| 4 | 通过 | 通过 | 925 | 31113 |
-| 8 | 通过 | 通过 | 925 | 31096 |
-
-每种核数包含 2 项测试，另有 22 项独立异常测试，总计 30 项。测试版本的静态检查数组占用额外 BSS，空闲普通页数量与正常内核不同。不同核数也改变启动栈和 DTB 大小。内核池初始均为 1024 页，建立内核页表后剩余 925 页，其余 99 页由页表持有。
-
-测试覆盖：
-
-1. 双池各申请/释放 10 页，写入 `0xAA`，验证计数与重新申请后的全页清零。
-2. 申请双池全部页面，验证地址唯一、耗尽计数为 0，以及释放后的完整容量恢复。
-3. 教师示例的 5 个映射：VA 0、半页长度、2 MiB 边界、1 GiB 边界、低半区最后一页；验证 PA、权限、权限更新、解映射及数据页/页表页回收。
-4. `vm_print` 显示修改前后；核对代码、只读区、可写区、UART 和 PLIC 两端的映射，确认固件及 CLINT 未映射。
-5. 分页开启后，使用不同 VA 写入普通 RAM 页，再通过直接映射读取。解除后改指向另一个物理页，验证实际 MMU 翻译与 TLB 刷新。
-6. 全部 hart 并发申请内核池剩余页，等待所有核完成后检查数据并释放。随后每核对双池各执行 128 轮、每轮 8 页的申请/清零检查/写入/释放，最终计数完全恢复。
-7. 独立异常测试：双池耗尽、错误池、重复释放、未对齐释放、固件页、池边界、非法 VA/PA/长度/权限、冲突映射、解除缺失映射。
-8. 真实 CPU 访问验证代码页和只读页禁止写入、固件未映射、解除后的别名失效，以及数据页禁止执行。store page fault 为 `scause=15`，instruction page fault 为 `scause=12`。
-
-四核正常启动选过 hart 1，八核正常启动选过 hart 6；四核内存测试由 hart 2 主启动，也正常完成，验证了主核不固定为 0 的情况。
-
-双核测试结束输出：
+双核实际输出节选：
 
 ```text
-PASS virtual: boundaries, flags, remap, unmap, MMU alias and recovery
-hart 0: Sv39 enabled, satp=0x800000000008026d; shared UART is locked.
-hart 1: Sv39 enabled, satp=0x800000000008026d; shared UART is locked.
-PASS hart 0: concurrent allocation and Sv39
-PASS hart 1: concurrent allocation and Sv39
-LAB2 TEST PASS cpus=2 kernel_free=925 user_free=31121
+PASS hart 1: register restore, nested locks, timer=5
+PASS hart 0: register restore, nested locks, timer=5
+LAB3 TEST PASS cpus=2 ticks=6 boot_hart=1
+LAB3 UART READY
+Z
+LAB3 UART PASS received=1 external=1
 ```
 
-以上各核打印顺序可能变化；地址受构建配置影响，复现时以实际输出为准。异常诊断同时输出 hart、`scause`、`sepc` 和 `stval`，便于定位错误。
+非法指令输出 `scause=2`，未映射的固件地址写入输出 `scause=15` 和 `stval=0x0000000080000000`，随后进入 `panic`。不同构建下 `sepc` 地址和各核输出顺序可以变化。
 
 ## 文件对应关系
 
 | 文件 | 内容 |
 | --- | --- |
-| `kernel/mem.h` | 页表定义、内存类型和课程接口 |
-| `kernel/memlayout.h` | QEMU 内存与 MMIO 范围 |
-| `kernel/pmem.c` | 双物理页池、锁、清零和释放检查 |
-| `kernel/kvm.c` | 页表操作、内核映射和每核启用 |
-| `kernel/string.c` | 内核 `memset` |
-| `kernel/kernel.ld` | 页对齐的内核边界 |
-| `kernel/main.c` | 初始化顺序及多核同步 |
-| `kernel/entry.S`、`kernel/printf.c` | 早期异常及 panic 诊断 |
-| `kernel/lab2_test.c` | 条件编译的内核测试 |
-| `tests/qemu_lab2.py` | 构建、启动、自动校验及日志 |
+| `kernel/kernel_vector.S` | 内核陷阱现场保存、恢复和 `sret` |
+| `kernel/trap.h`、`kernel/trap.c` | 陷阱帧、全局/每核初始化、中断分派 |
+| `kernel/plic.h`、`kernel/plic.c` | PLIC 优先级、使能、阈值、claim / complete |
+| `kernel/timer.h`、`kernel/timer.c` | 定时事件、每核统计、系统 ticks |
+| `kernel/sbi.h`、`kernel/sbi.c` | 增加 SBI TIME 调用 |
+| `kernel/uart.h`、`kernel/uart.c` | 接收中断开关和 FIFO 回显 |
+| `kernel/riscv.h`、`kernel/memlayout.h` | CSR 定义和 PLIC / 时间基准参数 |
+| `kernel/main.c` | 接入多核陷阱与定时器初始化 |
+| `kernel/lab3_test.c`、`kernel/lab3_register_test.S` | 条件编译的内核测试 |
+| `tests/qemu_lab3.py` | 自动构建、QEMU 输入、结果校验和日志 |
+| `lab2/README.md` | 归档前序实验文档 |
 
-本次完成 Lab 2 的基础任务。buddy 分配器、内核堆和大页是教师列出的进阶目标，当前未实现。用户进程及用户页表运行环境将在后续实验接入；普通数据池的“用户”表示分配用途，当前还未建立 U-mode 隔离。
+Lab 1 提供安全的多核启动、输出和锁，Lab 2 提供内存分配及设备映射，Lab 3 提供安全打断并恢复执行流的机制。这些功能为后续用户进程、系统调用和调度建立基础。

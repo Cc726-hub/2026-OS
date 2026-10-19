@@ -1,12 +1,14 @@
 #include "boot.h"
 #include "mem.h"
 #include "lab2_test.h"
+#include "lab3_test.h"
 #include "param.h"
 #include "printf.h"
 #include "riscv.h"
 #include "sbi.h"
 #include "types.h"
 #include "uart.h"
+#include "trap.h"
 
 static volatile uint32 started;
 
@@ -20,7 +22,7 @@ main(void)
         printfinit();
 
         printf("\nHello, OS!\n");
-        printf("Lab 2: physical memory and Sv39 kernel paging.\n");
+        printf("Lab 3: supervisor traps, UART and timer interrupts.\n");
         printf("OpenSBI boot hart %d, kernel=%p, dtb=%p.\n",
                (int)hartid, (void *)_entry, (void *)boot_dtb);
         printf("printf test: d=%d x=%x p=%p c=%c s=%s %%\n",
@@ -34,6 +36,12 @@ main(void)
         kvm_inithart();
 #if LAB2_TEST
         lab2_test_virtual();
+#endif
+
+#if !LAB2_TEST
+        trap_kernel_init();
+        trap_kernel_inithart();
+        uart_intr_enable();
 #endif
 
         for (uint32 cpu = 0; cpu < NCPU; cpu++) {
@@ -54,12 +62,22 @@ main(void)
             __asm__ volatile("nop");
         }
         kvm_inithart();
+#if !LAB2_TEST
+        trap_kernel_inithart();
+#endif
     }
 
     printf("hart %d: Sv39 enabled, satp=%p; shared UART is locked.\n",
            (int)hartid, (void *)r_satp());
 #if LAB2_TEST
     lab2_test_hart();
+#else
+    printf("hart %d: trap entry ready, UART and timer interrupts enabled.\n",
+           (int)hartid);
+    intr_on();
+#if LAB3_TEST
+    lab3_test_hart();
+#endif
 #endif
 
     for (;;) {

@@ -10,6 +10,7 @@ BUILD  := build
 KERNEL := $(BUILD)/kernel.elf
 CPUS   ?= 2
 LAB2_TEST ?= 0
+LAB3_TEST ?= 0
 TEST_CASE ?= 0
 CPPFLAGS := -include $(BUILD)/config.h
 
@@ -37,9 +38,13 @@ C_SOURCES := kernel/start.c \
              kernel/string.c \
              kernel/pmem.c \
              kernel/kvm.c \
-             kernel/lab2_test.c
+             kernel/lab2_test.c \
+             kernel/plic.c \
+             kernel/timer.c \
+             kernel/trap.c \
+             kernel/lab3_test.c
 
-ASM_SOURCES := kernel/entry.S
+ASM_SOURCES := kernel/entry.S kernel/kernel_vector.S kernel/lab3_register_test.S
 
 OBJECTS := $(patsubst kernel/%.c,$(BUILD)/%.o,$(C_SOURCES)) \
            $(patsubst kernel/%.S,$(BUILD)/%.o,$(ASM_SOURCES))
@@ -48,7 +53,7 @@ DEPS := $(OBJECTS:.o=.d)
 
 .DEFAULT_GOAL := build
 
-.PHONY: build inspect run test clean FORCE
+.PHONY: build inspect run test test-lab2 clean FORCE
 
 build: $(KERNEL)
 
@@ -59,7 +64,7 @@ $(BUILD)/.dir:
 FORCE:
 
 $(BUILD)/config.h: FORCE | $(BUILD)/.dir
-	@printf '#define NCPU %s\n#define LAB2_TEST %s\n#define TEST_CASE %s\n' '$(CPUS)' '$(LAB2_TEST)' '$(TEST_CASE)' > $@.tmp
+	@printf '#define NCPU %s\n#define LAB2_TEST %s\n#define LAB3_TEST %s\n#define TEST_CASE %s\n' '$(CPUS)' '$(LAB2_TEST)' '$(LAB3_TEST)' '$(TEST_CASE)' > $@.tmp
 	@if cmp -s $@.tmp $@; then rm -f $@.tmp; else mv $@.tmp $@; fi
 
 $(BUILD)/%.o: kernel/%.c $(BUILD)/config.h | $(BUILD)/.dir
@@ -89,6 +94,9 @@ clean:
 	rm -rf -- $(BUILD)
 
 test:
+	python3 tests/qemu_lab3.py --cpus $(CPUS)
+
+test-lab2:
 	python3 tests/qemu_lab2.py --cpus $(CPUS)
 
 -include $(DEPS)

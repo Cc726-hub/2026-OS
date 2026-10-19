@@ -1,6 +1,7 @@
 #include "types.h"
 #include "uart.h"
 #include "memlayout.h"
+#include "printf.h"
 
 #define UART0 UART_BASE
 
@@ -17,6 +18,9 @@
 #define UART_FCR_FIFO_CLEAR  ((1U << 1) | (1U << 2))
 #define UART_LSR_DATA_READY  (1U << 0)
 #define UART_LSR_TX_IDLE     (1U << 5)
+#define UART_IER_RX_ENABLE   (1U << 0)
+
+static uint64 received;
 
 static volatile uint8 *
 uart_register(uint32 offset)
@@ -39,7 +43,7 @@ uart_read(uint32 offset)
 void
 uartinit(void)
 {
-    /* Use polling in Lab 1, so UART interrupts remain disabled. */
+    /* Enable reception only after the trap entry and PLIC are ready. */
     uart_write(UART_IER, 0x00);
 
     /* Set the baud-rate divisor to 3, then select 8 data bits. */
@@ -68,4 +72,29 @@ uartgetc(void)
         return -1;
     }
     return uart_read(UART_RHR);
+}
+
+void
+uart_intr_enable(void)
+{
+    /* TX remains synchronous: do not enable transmit-empty interrupts. */
+    uart_write(UART_IER, UART_IER_RX_ENABLE);
+}
+
+void
+uart_intr(void)
+{
+    int c;
+    /* Drain the FIFO before completing this level-triggered PLIC request. */
+    while ((c = uartgetc()) >= 0) {
+        __atomic_add_fetch(&received, 1, __ATOMIC_RELAXED);
+        /* printf's lock also protects echo against output from other harts. */
+        printf("%c", c == '\r' ? '\n' : c);
+    }
+}
+
+uint64
+uart_received(void)
+{
+    return __atomic_load_n(&received, __ATOMIC_RELAXED);
 }
